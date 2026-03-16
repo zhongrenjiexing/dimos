@@ -28,6 +28,11 @@
 
 </div>
 
+# 已经下载了2.4G的数据文件到本地，但是本地环境是通过pip从网上安装的，不是本地的开源包安装的，需要注意，已经修改到local安装
+# Already transfer to local dir.
+
+# 通过手机热点部署时先执行 README-cjsg.md 
+
 # Intro
 
 Dimensional is the modern operating system for generalist robotics. We are setting the next-generation SDK standard, integrating with the majority of robot manufacturers.
