@@ -12,12 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
 from dimos_lcm.foxglove_msgs.ImageAnnotations import (
     ImageAnnotations as FoxgloveImageAnnotations,
 )
 
 
 class ImageAnnotations(FoxgloveImageAnnotations):  # type: ignore[misc]
+    @classmethod
+    def _get_field_type(cls, field_name):
+        # Python does not inherit __annotations__, so traverse the MRO manually.
+        for klass in cls.__mro__:
+            annotations = klass.__dict__.get("__annotations__", {})
+            if field_name in annotations:
+                annotation = annotations[field_name]
+                if annotation is None:
+                    return None
+                if isinstance(annotation, str):
+                    module = sys.modules[klass.__module__]
+                    if hasattr(module, annotation):
+                        return getattr(module, annotation)
+                    return None
+                return annotation
+        return None
+
     def __add__(self, other: "ImageAnnotations") -> "ImageAnnotations":
         points = self.points + other.points
         texts = self.texts + other.texts
