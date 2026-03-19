@@ -194,6 +194,18 @@ class Detection3DModule(Detection2DModule):
         if not detections:
             return
 
+        for det in detections:
+            center = det.center
+            w, h, d = det.get_bounding_box_dimensions()
+            n_pts = len(det.pointcloud.pointcloud.points)
+            print(
+                f"[Detection3D] {det.name:15s} | id={det.track_id}"
+                f" | conf={det.confidence:.0%}"
+                f" | center=({center.x:.2f}, {center.y:.2f}, {center.z:.2f})"
+                f" | size=({w:.2f}x{h:.2f}x{d:.2f})m"
+                f" | pts={n_pts}"
+            )
+
         for index, detection in enumerate(detections[:3]):
             pointcloud_topic = getattr(self, "detected_pointcloud_" + str(index))
             pointcloud_topic.publish(detection.pointcloud)

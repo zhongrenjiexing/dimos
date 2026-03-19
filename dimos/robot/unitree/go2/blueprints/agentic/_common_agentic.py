@@ -26,7 +26,7 @@ _common_agentic = autoconnect(
     person_follow_skill(camera_info=GO2Connection.camera_info_static),
     unitree_skills(),
     web_input(),
-    speak_skill(),
+    # speak_skill(),
 )
 
 __all__ = ["_common_agentic"]

@@ -17,6 +17,7 @@ logger = setup_logger()
 class OpenAIVlModelConfig(VlModelConfig):
     model_name: str = "gpt-4o-mini"
     api_key: str | None = None
+    base_url: str | None = None  # e.g. http://server:8011/v1 for OpenAI-compatible servers
 
 
 class OpenAIVlModel(VlModel):
@@ -26,12 +27,15 @@ class OpenAIVlModel(VlModel):
     @cached_property
     def _client(self) -> OpenAI:
         api_key = self.config.api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        base_url = self.config.base_url or os.getenv("OPENAI_BASE_URL")
+        if not api_key and not base_url:
             raise ValueError(
-                "OpenAI API key must be provided or set in OPENAI_API_KEY environment variable"
+                "OPENAI_API_KEY or OPENAI_BASE_URL must be set, and no vlm instance provided"
             )
-
-        return OpenAI(api_key=api_key)
+        kwargs: dict[str, str] = {"api_key": api_key or "not-needed"}
+        if base_url:
+            kwargs["base_url"] = base_url.rstrip("/")
+        return OpenAI(**kwargs)
 
     def query(self, image: Image | np.ndarray, query: str, response_format: dict | None = None, **kwargs) -> str:  # type: ignore[override, type-arg, no-untyped-def]
         if isinstance(image, np.ndarray):

@@ -16,11 +16,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import open3d as o3d
+
 from dimos_lcm.sensor_msgs import CameraInfo
 
 from dimos.msgs.geometry_msgs import Transform
 from dimos.msgs.sensor_msgs import PointCloud2
 from dimos.perception.detection.type.detection2d.bbox import Detection2DBBox
+
+# Suppress Open3D C++ warnings (e.g. "Creating from an empty legacy PointCloud.")
+# that fire when filters reduce a sparse cluster to 0 points.
+o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 # Filters take Detection2DBBox, PointCloud2, CameraInfo, Transform and return filtered PointCloud2 or None
 PointCloudFilter = Callable[
@@ -37,12 +43,15 @@ def statistical(nb_neighbors: int = 40, std_ratio: float = 0.5) -> PointCloudFil
         det: Detection2DBBox, pc: PointCloud2, ci: CameraInfo, tf: Transform
     ) -> PointCloud2 | None:
         try:
-            statistical, _removed = pc.pointcloud.remove_statistical_outlier(
+            if len(pc.pointcloud.points) == 0:
+                return None
+            filtered, _removed = pc.pointcloud.remove_statistical_outlier(
                 nb_neighbors=nb_neighbors, std_ratio=std_ratio
             )
-            return PointCloud2(statistical, pc.frame_id, pc.ts)
+            if len(filtered.points) == 0:
+                return None
+            return PointCloud2(filtered, pc.frame_id, pc.ts)
         except Exception:
-            # print("statistical filter failed:", e)
             return None
 
     return filter_func
@@ -53,13 +62,16 @@ def raycast() -> PointCloudFilter:
         det: Detection2DBBox, pc: PointCloud2, ci: CameraInfo, tf: Transform
     ) -> PointCloud2 | None:
         try:
+            if len(pc.pointcloud.points) == 0:
+                return None
             camera_pos = tf.inverse().translation
             camera_pos_np = camera_pos.to_numpy()
             _, visible_indices = pc.pointcloud.hidden_point_removal(camera_pos_np, radius=100.0)
+            if len(visible_indices) == 0:
+                return None
             visible_pcd = pc.pointcloud.select_by_index(visible_indices)
             return PointCloud2(visible_pcd, pc.frame_id, pc.ts)
         except Exception:
-            # print("raycast filter failed:", e)
             return None
 
     return filter_func
@@ -74,9 +86,13 @@ def radius_outlier(min_neighbors: int = 20, radius: float = 0.3) -> PointCloudFi
     def filter_func(
         det: Detection2DBBox, pc: PointCloud2, ci: CameraInfo, tf: Transform
     ) -> PointCloud2 | None:
+        if len(pc.pointcloud.points) == 0:
+            return None
         filtered_pcd, _removed = pc.pointcloud.remove_radius_outlier(
             nb_points=min_neighbors, radius=radius
         )
+        if len(filtered_pcd.points) == 0:
+            return None
         return PointCloud2(filtered_pcd, pc.frame_id, pc.ts)
 
     return filter_func

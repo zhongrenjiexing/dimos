@@ -23,6 +23,7 @@ from dimos.core.global_config import global_config
 from dimos.core.transport import pSHMTransport
 from dimos.msgs.sensor_msgs import Image
 from dimos.protocol.pubsub.impl.lcmpubsub import LCM
+from dimos.protocol.pubsub.patterns import Glob
 from dimos.protocol.service.system_configurator import ClockSyncConfigurator
 from dimos.robot.unitree.go2.connection import go2_connection
 from dimos.web.websocket_vis.websocket_vis_module import websocket_vis
@@ -65,11 +66,52 @@ def _static_base_link(rr: Any) -> list[Any]:
     return [
         rr.Boxes3D(
             half_sizes=[0.35, 0.155, 0.2],
-            colors=[(0, 255, 127)],
-            fill_mode="wireframe",
+            colors=[(0, 255, 127, 60)],
+            fill_mode="solid",
         ),
         rr.Transform3D(parent_frame="tf#/base_link"),
     ]
+
+
+def _convert_scene_update(scene_update: Any) -> Any:
+    """Convert Foxglove SceneUpdate (cube entities) to rr.Boxes3D for Rerun."""
+    import numpy as np
+    import rerun as rr
+
+    centers = []
+    half_sizes = []
+    labels = []
+    colors = []
+
+    for entity in scene_update.entities:
+        for cube in entity.cubes:
+            p = cube.pose.position
+            s = cube.size
+            c = cube.color
+            centers.append([p.x, p.y, p.z])
+            half_sizes.append([s.x / 2.0, s.y / 2.0, s.z / 2.0])
+            # Use the full text label (e.g. "3/person (87%)") if available
+            label = entity.texts[0].text if entity.texts_length > 0 else entity.id
+            labels.append(label)
+            # Force alpha to 200/255 (~78%) so boxes are clearly visible regardless
+            # of the original cube.color.a=0.2 set in SceneEntity construction
+            colors.append([
+                int(c.r * 255),
+                int(c.g * 255),
+                int(c.b * 255),
+                200,
+            ])
+
+    if not centers:
+        return None
+
+    return rr.Boxes3D(
+        centers=np.array(centers, dtype=np.float32),
+        half_sizes=np.array(half_sizes, dtype=np.float32),
+        labels=labels,
+        colors=colors,
+        radii=0.02,  # 2cm thick edges so the box outline is clearly visible
+    )
 
 
 def _go2_rerun_blueprint() -> Any:
@@ -99,6 +141,8 @@ rerun_config = {
         "world/camera_info": _convert_camera_info,
         "world/global_map": _convert_global_map,
         "world/navigation_costmap": _convert_navigation_costmap,
+        # SceneUpdate (Foxglove format) → rr.Boxes3D, matches any topic ending in /scene_update
+        Glob("**/scene_update"): _convert_scene_update,
     },
     # slapping a go2 shaped box on top of tf/base_link
     "static": {

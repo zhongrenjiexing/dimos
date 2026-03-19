@@ -218,10 +218,22 @@ class TemporalMemory(Module):
             from dimos.models.vl.openai import OpenAIVlModel
 
             api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY not set and no vlm instance provided")
-            self._vlm_raw = OpenAIVlModel(api_key=api_key)
-            logger.info("Created OpenAIVlModel from OPENAI_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL")
+            model_name = os.getenv("DIMOS_VLM_MODEL", "gpt-4o-mini")
+            if not api_key and not base_url:
+                raise ValueError(
+                    "OPENAI_API_KEY or OPENAI_BASE_URL must be set, and no vlm instance provided"
+                )
+            self._vlm_raw = OpenAIVlModel(
+                model_name=model_name,
+                api_key=api_key or "not-needed",
+                base_url=base_url or None,
+            )
+            logger.info(
+                "Created OpenAIVlModel",
+                base_url=base_url or "default",
+                model=model_name,
+            )
         return self._vlm_raw
 
     @property

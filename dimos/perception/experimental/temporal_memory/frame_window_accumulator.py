@@ -28,6 +28,11 @@ if TYPE_CHECKING:
     from dimos.msgs.sensor_msgs import Image
 
 
+def _debug(msg: str, *args: object) -> None:
+    """DEBUG: 输出到 stdout，便于在终端中查找。"""
+    print(f"[frame-acc DEBUG] {msg % args if args else msg}", flush=True)
+
+
 @dataclass
 class Frame:
     """A single buffered video frame."""
@@ -71,6 +76,7 @@ class FrameWindowAccumulator:
         self.window_s = window_s
         self.stride_s = stride_s
         self.fps = fps
+        self._stride_skip_count = 0  # DEBUG: throttle stride-skip logs
 
     # ------------------------------------------------------------------
     # Ingest
@@ -80,6 +86,11 @@ class FrameWindowAccumulator:
         with self._lock:
             if self._video_start_wall_time is None:
                 self._video_start_wall_time = wall_time
+                _debug(
+                    "set_start_time: _video_start_wall_time=%.3f (wall_time=%.3f)",
+                    self._video_start_wall_time,
+                    wall_time,
+                )
 
     def add_frame(self, image: Image, wall_time: float) -> None:
         """Add a frame to the buffer.
@@ -90,11 +101,12 @@ class FrameWindowAccumulator:
         """
         with self._lock:
             if self._video_start_wall_time is None:
+                _debug("add_frame: dropped (video_start not set yet)")
                 return
-            if image.ts is not None:
-                timestamp_s = image.ts - self._video_start_wall_time
-            else:
-                timestamp_s = wall_time - self._video_start_wall_time
+            # 修复: 当 image.ts (机器人时钟) 与 video_start (PC 时钟) 不同步时，
+            # timestamp_s 会异常，导致 stride 检查失败。改用 wall_time 保证 stride 按真实时间推进。
+            # 原逻辑 (保留): if image.ts: timestamp_s = image.ts - video_start; else: wall_time - video_start
+            timestamp_s = wall_time - self._video_start_wall_time
             frame = Frame(
                 frame_index=self._frame_count,
                 timestamp_s=timestamp_s,
@@ -102,6 +114,15 @@ class FrameWindowAccumulator:
             )
             self._buffer.append(frame)
             self._frame_count += 1
+            # DEBUG: every 20th frame or first frame, log timestamp sources
+            if self._frame_count == 1 or self._frame_count % 20 == 0:
+                _debug(
+                    "add_frame #%d: wall_time=%.3f video_start=%.3f timestamp_s=%.3f (fixed: wall_time)",
+                    self._frame_count,
+                    wall_time,
+                    self._video_start_wall_time,
+                    timestamp_s,
+                )
 
     # ------------------------------------------------------------------
     # Window extraction
@@ -115,15 +136,45 @@ class FrameWindowAccumulator:
         """
         with self._lock:
             if not self._buffer:
+                _debug("try_extract_window: SKIP (buffer empty)")
                 return None
             current_time = self._buffer[-1].timestamp_s
-            if abs(current_time - self._last_analysis_time) < self.stride_s:
-                return None
+            delta = abs(current_time - self._last_analysis_time)
             frames_needed = max(1, int(self.fps * self.window_s))
-            if len(self._buffer) < frames_needed:
+
+            if delta < self.stride_s:
+                self._stride_skip_count += 1
+                if self._stride_skip_count <= 3 or self._stride_skip_count % 10 == 0:
+                    _debug(
+                        "try_extract_window: SKIP stride #%d "
+                        "(delta=%.3f < stride_s=%.1f) current_time=%.3f "
+                        "_last_analysis_time=%.3f buffered=%d",
+                        self._stride_skip_count,
+                        delta,
+                        self.stride_s,
+                        current_time,
+                        self._last_analysis_time,
+                        len(self._buffer),
+                    )
                 return None
+            if len(self._buffer) < frames_needed:
+                _debug(
+                    "try_extract_window: SKIP frames_needed (buffered=%d < %d)",
+                    len(self._buffer),
+                    frames_needed,
+                )
+                return None
+
             frames = list(self._buffer)[-frames_needed:]
             self._last_analysis_time = frames[-1].timestamp_s
+            self._stride_skip_count = 0  # reset on successful extract
+            _debug(
+                "try_extract_window: OK extracted %d frames [%.3f-%.3f]s _last_analysis_time->%.3f",
+                len(frames),
+                frames[0].timestamp_s,
+                frames[-1].timestamp_s,
+                self._last_analysis_time,
+            )
             return frames
 
     def mark_analysis_time(self, t: float) -> None:
