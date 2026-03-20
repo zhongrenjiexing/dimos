@@ -13,7 +13,13 @@
 # limitations under the License.
 
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+import threading
 
 from dimos_lcm.foxglove_msgs.ImageAnnotations import (
     ImageAnnotations,
@@ -31,18 +37,32 @@ from dimos.core.transport import LCMTransport
 from dimos.msgs.geometry_msgs import PoseStamped, Quaternion, Transform, Vector3
 from dimos.msgs.sensor_msgs import Image, PointCloud2
 from dimos.msgs.vision_msgs import Detection2DArray
-from dimos.perception.detection.module2D import Detection2DModule
+from dimos.perception.detection.module2D import Detection2DModule, Config as Detection2DConfig
 from dimos.perception.detection.type.detection2d.imageDetections2D import ImageDetections2D
 from dimos.perception.detection.type.detection3d import Detection3DPC
 from dimos.perception.detection.type.detection3d.imageDetections3DPC import ImageDetections3DPC
 from dimos.types.timestamped import align_timestamped
 from dimos.utils.reactive import backpressure
+from dimos.utils.logging_config import get_run_log_dir, setup_logger
+
+logger = setup_logger()
 
 if TYPE_CHECKING:
     from dimos.core.rpc_client import ModuleProxy
 
 
+@dataclass
+class Detection3DConfig(Detection2DConfig):
+    # Save per-detection 3D positions as JSONL (one object per line).
+    # Uses the current DimOS run log directory if available.
+    save_object_positions: bool = False
+    object_positions_filename: str = "object_positions_{pid}.jsonl"
+    include_bbox_dimensions: bool = True
+
+
 class Detection3DModule(Detection2DModule):
+    default_config = Detection3DConfig
+
     color_image: In[Image]
     pointcloud: In[PointCloud2]
 
@@ -62,6 +82,10 @@ class Detection3DModule(Detection2DModule):
     detected_image_2: Out[Image]
 
     detection_3d_stream: Observable[ImageDetections3DPC] | None = None
+
+    _object_positions_lock: threading.RLock
+    _object_positions_fh: Any | None = None
+    _object_positions_path: Path | None = None
 
     def process_frame(
         self,
@@ -172,6 +196,26 @@ class Detection3DModule(Detection2DModule):
     def start(self) -> None:
         super().start()
 
+        self._object_positions_lock = threading.RLock()
+        self._object_positions_fh = None
+        self._object_positions_path = None
+
+        if self.config.save_object_positions:
+            run_log_dir = get_run_log_dir()
+            base_dir = run_log_dir if run_log_dir is not None else Path.cwd()
+
+            filename = self.config.object_positions_filename
+            pid = os.getpid()
+            filename = filename.format(pid=pid)
+
+            out_path = Path(base_dir) / filename
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # buffering=1 enables line-buffered writes for JSONL.
+            self._object_positions_fh = open(out_path, "a", encoding="utf-8", buffering=1)
+            self._object_positions_path = out_path
+            logger.info(f"[Detection3D] saving object positions to {out_path}")
+
         def detection2d_to_3d(args):  # type: ignore[no-untyped-def]
             detections, pc = args
             transform = self.tf.get("camera_optical", pc.frame_id, detections.image.ts, 5.0)
@@ -188,6 +232,14 @@ class Detection3DModule(Detection2DModule):
 
     @rpc
     def stop(self) -> None:
+        # Close append-only file handle to ensure the last buffered JSON line is flushed.
+        if getattr(self, "_object_positions_fh", None) is not None:
+            with self._object_positions_lock:
+                try:
+                    self._object_positions_fh.close()  # type: ignore[union-attr]
+                finally:
+                    self._object_positions_fh = None
+
         super().stop()
 
     def _publish_detections(self, detections: ImageDetections3DPC) -> None:
@@ -205,6 +257,26 @@ class Detection3DModule(Detection2DModule):
                 f" | size=({w:.2f}x{h:.2f}x{d:.2f})m"
                 f" | pts={n_pts}"
             )
+
+            if self._object_positions_fh is not None:
+                record: dict[str, Any] = {
+                    "ts": det.ts,
+                    "frame_id": det.frame_id,
+                    "label": det.name,
+                    "track_id": det.track_id,
+                    "confidence": det.confidence,
+                    "x": center.x,
+                    "y": center.y,
+                    "z": center.z,
+                    "num_points": n_pts,
+                }
+                if self.config.include_bbox_dimensions:
+                    record["bbox_dimensions_m"] = {"w": w, "h": h, "d": d}
+
+                # One JSON record per line (append-only).
+                line = json.dumps(record, ensure_ascii=False) + "\n"
+                with self._object_positions_lock:
+                    self._object_positions_fh.write(line)
 
         for index, detection in enumerate(detections[:3]):
             pointcloud_topic = getattr(self, "detected_pointcloud_" + str(index))

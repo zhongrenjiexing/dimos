@@ -31,6 +31,8 @@ unitree_go2_detection = (
         unitree_go2,
         detection3d_module(
             camera_info=GO2Connection.camera_info_static,
+            save_object_positions=True,
+            object_positions_filename="unitree-go2-detection_object_positions_{pid}.jsonl",
         ),
     )
     .remappings(
